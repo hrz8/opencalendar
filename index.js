@@ -178,7 +178,7 @@ app.post("/create", async (req, res) => {
 });
 
 // - APP START
-app.listen(process.env.PORT || APP_PORT, () => console.log(`http://localhost:${APP_PORT}`));
+app.listen(Number(process.env.PORT) || APP_PORT, () => console.log(`http://localhost:${APP_PORT}`));
 
 // Avoid a single error from crashing the server in production.
 process.on("uncaughtException", (...args) => console.error(args));
