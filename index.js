@@ -11,6 +11,7 @@ const WHITELIST_ORIGIN = env.get('WHITELIST_ORIGIN').asString();
 const GOOGLE_SERVICE_ACCOUNT = JSON.parse(env.get('GOOGLE_SERVICE_ACCOUNT').required().asString()).installed;
 const GOOGLE_SERVICE_SCOPES = env.get('GOOGLE_SERVICE_SCOPES').default('calendar.events').asString();
 const GOOGLE_SERVICE_REDIRECT_URI = env.get('GOOGLE_SERVICE_REDIRECT_URI').required().asString();
+const GOOGLE_SERVICE_OAUTH_TOKEN = env.get('GOOGLE_SERVICE_OAUTH_TOKEN').default("").asString();
 
 // - EXPRESS
 const express = require("express");
@@ -27,33 +28,39 @@ const oAuth2Client = new google.auth.OAuth2(
 // - OAuth Perform
 const TOKEN_PATH = 'token.json';
 let calendar;
-fs.readFile(TOKEN_PATH, (err, token) => {
-  if (err) {
-    const authUrl = oAuth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: GOOGLE_SERVICE_SCOPES.split(',').map((service) => `https://www.googleapis.com/auth/${service}`),
-    });
-    console.log('Authorize this app by visiting this url:', authUrl);
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    return rl.question('Enter the code from that page here: ', (code) => {
-      rl.close();
-      oAuth2Client.getToken(code, (err, token) => {
-        if (err) return console.error('Error retrieving access token', err);
-        oAuth2Client.setCredentials(token);
-        fs.writeFile(TOKEN_PATH, JSON.stringify(token), (err) => {
-          if (err) return console.error(err);
-          console.log('Token stored to', TOKEN_PATH);
-        });
-        calendar = google.calendar({version: 'v3', auth: oAuth2Client});
+
+if (GOOGLE_SERVICE_OAUTH_TOKEN.length && process.env.NODE_ENV === 'production') {
+  oAuth2Client.setCredentials(JSON.parse(GOOGLE_SERVICE_OAUTH_TOKEN));
+  calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
+} else {
+  fs.readFile(TOKEN_PATH, (err, token) => {
+    if (err) {
+      const authUrl = oAuth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: GOOGLE_SERVICE_SCOPES.split(',').map((service) => `https://www.googleapis.com/auth/${service}`),
       });
-    });
-  };
-  oAuth2Client.setCredentials(JSON.parse(token));
-  calendar = google.calendar({version: 'v3', auth: oAuth2Client});
-});
+      console.log('Authorize this app by visiting this url:', authUrl);
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      return rl.question('Enter the code from that page here: ', (code) => {
+        rl.close();
+        oAuth2Client.getToken(code, (err, token) => {
+          if (err) return console.error('Error retrieving access token', err);
+          oAuth2Client.setCredentials(token);
+          fs.writeFile(TOKEN_PATH, JSON.stringify(token), (err) => {
+            if (err) return console.error(err);
+            console.log('Token stored to', TOKEN_PATH);
+          });
+          calendar = google.calendar({version: 'v3', auth: oAuth2Client});
+        });
+      });
+    };
+    oAuth2Client.setCredentials(JSON.parse(token));
+    calendar = google.calendar({version: 'v3', auth: oAuth2Client});
+  });
+}
 
 // - CONST
 const validResponses = ['needsAction', 'declined', 'tentative', 'accepted'];
