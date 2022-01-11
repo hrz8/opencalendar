@@ -1,7 +1,8 @@
 require('dotenv').config();
-const env = require('env-var');
 const fs = require('fs');
 const readline = require('readline');
+const Joi = require('joi');
+const env = require('env-var');
 
 // - ENVS
 const APP_PORT = env.get('APP_PORT').default(3001).asInt();
@@ -9,11 +10,7 @@ const USE_WHITELIST = env.get('USE_WHITELIST').default('false').asBool();
 const WHITELIST_ORIGIN = env.get('WHITELIST_ORIGIN').asString();
 const GOOGLE_SERVICE_ACCOUNT = JSON.parse(env.get('GOOGLE_SERVICE_ACCOUNT').required().asString()).installed;
 const GOOGLE_SERVICE_SCOPES = env.get('GOOGLE_SERVICE_SCOPES').default('calendar.events').asString();
-
-// - CACHE
-const ONE_SECOND = 1000
-const ONE_MINUTE = ONE_SECOND * 60
-const Cache = new Map();
+const GOOGLE_SERVICE_REDIRECT_URI = env.get('GOOGLE_SERVICE_REDIRECT_URI').required().asString();
 
 // - EXPRESS
 const express = require("express");
@@ -24,7 +21,7 @@ const { google } = require("googleapis");
 const oAuth2Client = new google.auth.OAuth2(
   GOOGLE_SERVICE_ACCOUNT.client_id,
   GOOGLE_SERVICE_ACCOUNT.client_secret,
-  "urn:ietf:wg:oauth:2.0:oob"
+  GOOGLE_SERVICE_REDIRECT_URI
 );
 
 // - OAuth Perform
@@ -58,6 +55,9 @@ fs.readFile(TOKEN_PATH, (err, token) => {
   calendar = google.calendar({version: 'v3', auth: oAuth2Client});
 });
 
+// - CONST
+const validResponses = ['needsAction', 'declined', 'tentative', 'accepted'];
+
 // - MIDDLEWARE
 app.use(
   require("morgan")(":method :url :status - :response-time ms (via :referrer)")
@@ -80,26 +80,37 @@ app.get("/", async (req, res) => {
   res.redirect("https://github.com/hrz8/opencalendar#readme");
 });
 
-app.post("/send", async (req, res) => {
+app.post("/send/:event", async (req, res) => {
+  const paramsSchema = Joi.object({
+    event: Joi.string().required(),
+  });
+  const bodySchema = Joi.object({
+    recipient: Joi.string().required(),
+    response: Joi.string().valid(...validResponses)
+  });
+  
+  try {
+    await paramsSchema.validateAsync(req.params);
+    await bodySchema.validateAsync(req.body);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || 'validation error'}); 
+  }
+
   try {
     const { event: eventId } = req.params;
     const { recipient, response } = req.body;
-
-    if (!eventId || !recipient) {
-      return res.status(400).json({ error: 'event and recipient is required'}); 
-    }
-
-    const validResponses = ['needsAction', 'declined', 'tentative', 'accepted'];
-    if (!validResponses.includes(response)) {
-      return res.status(400).json({ error: `response should be one of ${JSON.stringify(validResponses)}`}); 
-    }
 
     const { data: event } = await calendar.events.get({
       calendarId: 'primary',
       eventId
     });
 
-    event.attendees = [...event.attendees, { email: recipient, responseStatus: response || 'needsAction' }];
+    event.attendees = [
+      ...event.attendees, {
+        email: recipient,
+        responseStatus: response || 'needsAction'
+      }
+    ];
 
     const updatedEvent = await calendar.events.patch({
       calendarId: 'primary',
@@ -117,27 +128,47 @@ app.post("/send", async (req, res) => {
 });
 
 app.post("/create", async (req, res) => {
-  var event = {
-    'summary': 'Google I/O 2015',
-    'location': '800 Howard St., San Francisco, CA 94103',
-    'description': 'A chance to hear more about Google\'s developer products.',
-    'start': {
-      'dateTime': '2015-05-28T09:00:00-07:00',
-      'timeZone': 'America/Los_Angeles',
-    },
-    'end': {
-      'dateTime': '2015-05-28T17:00:00-07:00',
-      'timeZone': 'America/Los_Angeles',
-    },
-    'attendees': [
-      {'email': 'lpage@example.com'},
-      {'email': 'sbrin@example.com'},
-    ],
-    'reminders': {
-      'useDefault': true
-    },
-  };
-})
+  // https://developers.google.com/calendar/api/v3/reference/events/insert#examples
+  const timeSchema = Joi.object({
+    dateTime: Joi.date().required(),
+    timeZone: Joi.string().required()
+  });
+  const attendeeSchema = Joi.object({
+    email: Joi.string().email({ tlds: { allow: false } }),
+    responseStatus: Joi.string().valid(...validResponses)
+  });
+  const schema = Joi.object({
+    summary: Joi.string().required(),
+    location: Joi.string().required(),
+    description: Joi.string().required(),
+    start: timeSchema,
+    end: timeSchema,
+    attendees: Joi.array().items(attendeeSchema),
+    reminders: Joi.object()
+  });
+  
+  try {
+    await schema.validateAsync(req.body);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || 'validation error'}); 
+  }
+
+  try {
+    const resource = req.body;
+    const event = await calendar.events.insert({
+      calendarId: 'primary',
+      resource
+    });
+  
+    return res.json({
+      id: event?.data?.id,
+      htmlLink: event?.data?.htmlLink,
+      responseURL: event?.request?.responseURL,
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
 
 // - APP START
 app.listen(process.env.PORT || APP_PORT, () => console.log(`http://localhost:${APP_PORT}`));
